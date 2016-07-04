@@ -1,0 +1,201 @@
+diff --git a/src/truchas/physics/additive_manufacturing/additive_manufacturing_driver.F90 b/src/truchas/physics/additive_manufacturing/additive_manufacturing_driver.F90
+index 11c847a..0bcb17b 100644
+--- a/src/truchas/physics/additive_manufacturing/additive_manufacturing_driver.F90
++++ b/src/truchas/physics/additive_manufacturing/additive_manufacturing_driver.F90
+@@ -84,7 +84,7 @@ module additive_manufacturing_driver
+       call MATL_SET_VOF (am%state%vol_fracs)
+ 
+       !!!! REMOVE !!!!!
+-      print *, "nozzle y: ", am%am_geom%am_coords(2)
++      !print *, "nozzle y: ", am%am_geom%am_coords(2)
+       !!!! REMOVE !!!!!
+ 
+       deallocate(Vof)
+diff --git a/src/truchas/physics/additive_manufacturing/am_state_type.F90 b/src/truchas/physics/additive_manufacturing/am_state_type.F90
+index a715899..125a9b6 100644
+--- a/src/truchas/physics/additive_manufacturing/am_state_type.F90
++++ b/src/truchas/physics/additive_manufacturing/am_state_type.F90
+@@ -57,6 +57,8 @@
+ !!       be 300 (arbitrarily)---need to change this to something more reasonable, e.g. setting
+ !!       the temperature to its previous value.
+ 
++#include "f90_assert.fpp"
++
+ module am_state_type
+ 
+   use kinds, only: r8
+@@ -132,6 +134,7 @@ module am_state_type
+         end if
+       end do
+       this%nfluids = m_fluid
++      ASSERT(this%nfluids == 1)
+ 
+       ! Allocate array to hold indices of interface cells
+       allocate(   this%vol_fracs(nmat,ncells), &
+diff --git a/src/truchas/physics/additive_manufacturing/interface_mass_gaussian_type.F90 b/src/truchas/physics/additive_manufacturing/interface_mass_gaussian_type.F90
+index 6271d85..d96a823 100644
+--- a/src/truchas/physics/additive_manufacturing/interface_mass_gaussian_type.F90
++++ b/src/truchas/physics/additive_manufacturing/interface_mass_gaussian_type.F90
+@@ -6,6 +6,7 @@
+ !!
+ !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+ 
++#include "f90_assert.fpp"
+ 
+ module interface_mass_gaussian_type
+ 
+@@ -148,6 +149,7 @@ module interface_mass_gaussian_type
+       integer :: m, n, nfluid, m_void, m_fluid, nfc, f_up(1), status, f
+       real(r8) :: dx, dy, delta_vof, A, V, upward_vec(3), rho
+       real(r8), allocatable :: params(:), proj_onto_up_vec(:)
++      real(r8) :: fluid_frac, solid_frac
+ 
+       nfc = state%nfaces
+       allocate(proj_onto_up_vec(1:nfc), STAT = status)
+@@ -156,6 +158,13 @@ module interface_mass_gaussian_type
+       nfluid = size(state%fluid_indices)
+       m_void = state%void_index
+ 
++!NNC! begin
++      INSIST(nfluid == 1)
++      INSIST(state%fluid_indices(1) == 2)
++      INSIST(state%void_index == 3)
++!NNC! end
++
++
+       ! Find all interface cells located in the mushy zone. 
+       ! Note: for interface cells that are pure void, the temperature
+       ! and velocity of the cell are set to that of the cell below; 
+@@ -187,13 +196,23 @@ module interface_mass_gaussian_type
+         !!!! NOTE: ASSUMES THERE IS ONLY ONE FLUID !!!!
+         rho = density_material(1)
+         delta_vof = this%powder_absorp(n) * A/(rho*V) * delta_vof
+-        m_fluid = state%fluid_indices(m)
+-        ! Add volume fraction to fluid materials by splitting into equal amounts
+-        do m = 1, nfluid
+-          !! TODO: MOVE DENSITY COMPUTATION OUT OF LOOP---PRECOMPUTE
+-          m_fluid = state%fluid_indices(m)
+-          state%vol_fracs(m_fluid,n) = state%vol_fracs(m_fluid,n) + delta_vof/nfluid
+-        end do 
++!NNC! Adds fluid to cell.  This increases the temperature in mushy cells.
++!NNC! Note also that there is really only ever one fluid.
++!NNC!        m_fluid = state%fluid_indices(m)
++!NNC!        ! Add volume fraction to fluid materials by splitting into equal amounts
++!NNC!        do m = 1, nfluid
++!NNC!          !! TODO: MOVE DENSITY COMPUTATION OUT OF LOOP---PRECOMPUTE
++!NNC!          m_fluid = state%fluid_indices(m)
++!NNC!          state%vol_fracs(m_fluid,n) = state%vol_fracs(m_fluid,n) + delta_vof/nfluid
++!NNC!        end do 
++!NNC!   Add material in same liquid/solid proportion of the material in the cell.
++!NNC!   Maintains the existing cell temperature; an improvement, but still not right.
++!NNC!   Assumes solid=1, fluid=2
++        fluid_frac = min(1.0_r8, state%vol_fracs(2,n) / (1 - state%void_vol_fracs(n)))
++        solid_frac = 1.0_r8 - fluid_frac
++        state%vol_fracs(1,n) = state%vol_fracs(1,n) + solid_frac*delta_vof
++        state%vol_fracs(2,n) = state%vol_fracs(2,n) + fluid_frac*delta_vof
++!NNC!   End of addition
+         ! Subtract volume fraction from the void (this can go negative here---if it does, 
+         ! it will be fixed in  the fluid redistribution phase)
+         state%vol_fracs(m_void,n) = state%vol_fracs(m_void,n) - delta_vof
+@@ -213,6 +232,10 @@ module interface_mass_gaussian_type
+     subroutine redistribute_overflow(this, state)
+ 
+       use legacy_mesh_api, only: Cell, EE_GATHER
++!NNC! begin
++      use material_table
++      use material_system
++!NNC! end
+ 
+       class(interface_mass_gaussian), intent(inout) :: this
+       type(am_state), intent(inout) :: state
+@@ -223,6 +246,18 @@ module interface_mass_gaussian_type
+                                velocities_y_nghbrs(:,:), velocities_z_nghbrs(:,:), &
+                                void_vol_fracs_nghbrs(:,:), proj_onto_down_vec(:)
+ 
++!NNC! begin
++      integer :: iarray(1)
++      real(r8) :: rarray(2), solid_frac, fluid_frac, c
++      type(mat_system), pointer :: mat => null()
++
++      INSIST(mt_num_material() == 1)
++      call mt_get_material_ids(iarray)
++      mat => mt_get_material(iarray(1))
++      INSIST(associated(mat))
++      INSIST(ms_num_phase(mat) == 2)
++!NNC! end
++
+       nfc = state%nfaces
+       ncells = state%ncells
+       m_void = state%void_index
+@@ -259,22 +294,37 @@ module interface_mass_gaussian_type
+         ! then get the oveflowing fluid
+         volume_void_nghbr = void_vol_fracs_nghbrs(f_down(1),n)
+         if ( volume_void_nghbr < 0 ) then
+-          do m = 1, state%nfluids
+-            m_fluid = state%fluid_indices(m)
+-            ! Split the amount of overflowing fluid in the cell below 
+-            state%vol_fracs(m_fluid,n) = state%vol_fracs(m_fluid,n) + &
+-                                           abs(volume_void_nghbr)/state%nfluids
+-          end do
+-          state%vol_fracs(m_void,n) = state%vol_fracs(m_void,n) - abs(volume_void_nghbr)
+-          state%void_vol_fracs(n) = state%vol_fracs(m_void,n)
++!NNC!          do m = 1, state%nfluids
++!NNC!            m_fluid = state%fluid_indices(m)
++!NNC!            ! Split the amount of overflowing fluid in the cell below 
++!NNC!            state%vol_fracs(m_fluid,n) = state%vol_fracs(m_fluid,n) + &
++!NNC!                                           abs(volume_void_nghbr)/state%nfluids
++!NNC!          end do
++!NNC!          state%vol_fracs(m_void,n) = state%vol_fracs(m_void,n) - abs(volume_void_nghbr)
++!NNC!          state%void_vol_fracs(n) = state%vol_fracs(m_void,n)
+           ! If the accepting cell was pure void, set the temperatures and velocities
+           ! to be those of the donating cell below
+           if ( volume_void > (1-state%one_tol) ) then
+             state%temps(n) = temps_nghbrs(f_down(1),n)
+             state%velocities_x(n) = velocities_x_nghbrs(f_down(1),n)
+             state%velocities_y(n) = velocities_y_nghbrs(f_down(1),n)
+-            state%velocities_z(n) = velocities_z_nghbrs(f_down(1),n) 
++            state%velocities_z(n) = velocities_z_nghbrs(f_down(1),n)
++!NNC! begin
++            call ms_phase_mixture(mat, [state%temps(n)], rarray)
++            state%vol_fracs(1,n) = state%vol_fracs(1,n) + rarray(1)*abs(volume_void_nghbr)
++            state%vol_fracs(2,n) = state%vol_fracs(2,n) + rarray(2)*abs(volume_void_nghbr)
++          else
++            fluid_frac = state%vol_fracs(2,n) / (1 - volume_void)
++            solid_frac = 1 - fluid_frac
++            state%vol_fracs(1,n) = state%vol_fracs(1,n) + solid_frac*abs(volume_void_nghbr)
++            state%vol_fracs(2,n) = state%vol_fracs(2,n) + fluid_frac*abs(volume_void_nghbr)
++!NNC! end
+           end if
++!NNC! begin
++          state%vol_fracs(m_void,n) = state%vol_fracs(m_void,n) - abs(volume_void_nghbr)
++          state%void_vol_fracs(n) = state%vol_fracs(m_void,n)
++          INSIST(state%void_vol_fracs(n) >= 0.0_r8)
++!NNC! end
+         end if
+       end do
+ 
+@@ -282,12 +332,18 @@ module interface_mass_gaussian_type
+       do n = 1, state%ncells
+         volume_void = state%void_vol_fracs(n)
+         if ( volume_void < 0 ) then
+-          ! Split the amount of outgoing fluid equally among the (non-void) fluids
+-          do m = 1, state%nfluids
+-            m_fluid = state%fluid_indices(m)
+-            ! Subtract off the amount of fluid material m_fluid leaving the cell
+-            state%vol_fracs(m_fluid,n) = state%vol_fracs(m_fluid,n) - abs(volume_void)/state%nfluids
+-          end do
++!NNC!          ! Split the amount of outgoing fluid equally among the (non-void) fluids
++!NNC!          do m = 1, state%nfluids
++!NNC!            m_fluid = state%fluid_indices(m)
++!NNC!            ! Subtract off the amount of fluid material m_fluid leaving the cell
++!NNC!            state%vol_fracs(m_fluid,n) = state%vol_fracs(m_fluid,n) - abs(volume_void)/state%nfluids
++!NNC!          end do
++!NNC! Material moved to cell above.  Maintain temperature.
++!NNC! assumes solid and liquid are 1 and 2
++          c = state%vol_fracs(1,n) + state%vol_fracs(2,n)
++          state%vol_fracs(1,n) = state%vol_fracs(1,n) / c
++          state%vol_fracs(2,n) = state%vol_fracs(2,n) / c
++!NNC! end
+           state%vol_fracs(m_void,n) = 0
+           state%void_vol_fracs(n) = 0
+         end if
