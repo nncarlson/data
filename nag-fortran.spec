@@ -1,18 +1,18 @@
 Name: nag-fortran
 Summary: NAG Fortran compiler
-Version: 6.1
-Release: 2.lanl
+Version: 6.0
+Release: 7.lanl
 License: Commercial
 Group: Development/Languages
 URL: http://www.nag.co.uk/nagware.html
 Packager: Neil Carlson <nnc@lanl.gov>
-Source0: npl6a61na_amd64.tgz
+Source0: npl6a60na_amd64_1071.tgz
 Source1: nag.licence
 BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root
 Prefix: /opt/nag/nagfor-%{version}
 ExclusiveArch: x86_64
 ExclusiveOS: Linux
-Provides: libf61rts.so.1 libf61rts.so.1()(64bit)
+Provides: libf60rts.so.1 libf60rts.so.1()(64bit)
 
 # don't strip *anything*, fools
 %global __strip                 /bin/true
@@ -90,10 +90,7 @@ chmod 755 $bindir/dbx90
 
 %changelog
 * Fri Aug 26 2016 Neil Carlson <nnc@lanl.gov>
-- Update to 6.1 build 6113.
-
-* Tue Mar 29 2016 Neil Carlson <nnc@lanl.gov>
-- Update to version 6.1
+- Update to edit 1071.
 
 * Fri Jan 29 2016 Neil Carlson <nnc@lanl.gov>
 - Update to edit 1067. New edit.
